@@ -1,0 +1,291 @@
+#In Argo Rollouts Scaling, there are 2 types;
+
+#1.Time Base Scaling(Scale 10%, wait 1 hour, then scale 20% indefinitely) 
+apiVersion: argoproj-io/vlalphal 
+kind: Rollout 
+metadata: 
+  name: ro out-demo 
+  namespace: demo 
+spec: 
+  replicas: 3 
+  template:
+    spec: 
+      containers: 
+        - name: demo 
+          image: demo:1.15.4 
+          ports: 
+            - containerPort: 80 
+  strategy: 
+    canary: 
+      steps: #This is the rollout definition 
+        - setWeight: 10 #This means 10% of the pods e.g We have 10pods, with this setWeight, 1 out of the 10pods will be a canary pod and the other 9 pods will be stable pods 
+        - pause: { duration: 1h } #1 hour is wait duration after which it will move another pod to canary 
+        - setWeight: 20 # This means 20% of the pods 
+        - pause: {} # pause indefinitely
+
+#2. Controlled Scaling(Set 25% traffic to 3 pod replicas) 
+#This is to manually set the % of traffic to shift to a specific set of pods. say in 3 out of 10pods,we want shift 25% traffic to the 3 pods where we can do testing
+#Say We want to test 1 canary pod without sending user traffic to the pod, we set replicas=1 and weight=0 [this way, we can create canary pods, do testing before routing user traffic to the pod(s)]
+#
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-demo 
+  namespace: demo 
+spec:
+  repticas: 3 
+  template: 
+    spec: 
+      containers: 
+        - name: demo 
+          image: demo:1.15.4 
+          ports: 
+  strategy: 
+    canary: 
+      steps: 
+        - setCanaryScale: 
+            replicas: 3 
+        - setCanaryScale: 
+            Weight: 25 
+        - setCanaryScale: 
+            matchTrafficWeight: true
+
+#3.=>Argo Rollouts Features 
+#A)HOW do We query splunk Logs to determine which pod is canary and which pod is stable? Add metadata labe ls to the canary/stable pods
+strategy: 
+  canary: 
+    stableMetadata: 
+      labels: 
+        role: stable 
+    canaryMetadata: 
+      labels:  
+        role: canary 
+
+#B=>Supports HPA(so when cpu utilization is above 80, HPA spin up xtra pods to serve the traffic/ manange the load) 
+apiVersion: autoscaling/v1 
+kind: HorizontalPodAutoscaler 
+metadata: 
+  name: hpa-rollout-example 
+spec: 
+  maxReplicas: 6 
+  minReplicas: 2 
+  scaleTargetRef: 
+    apiVersion: argoproj.io/vlalphal 
+    kind: Rollout 
+    name: example-rollout 
+	targetCPUUtilizationPercentage: 80
+
+#C=>Supports Affinity Rules(this means that we can schedule stable pods on dedicated nodes and canary pods on it's own dedicated nades) 
+#Because if we schedule all stable/canary pods on very single node and say we have 100 nodes and we want to scale down stable pods, each node will be say 50%/20% etc empty capacity.u will be wasting alot of resources
+strategy: 
+  canary: 
+    antiAffinity: 
+		  preferredDuringSchedulingIgnoredDuringExecution: 
+        - weight: 100 
+          podAffinityTerm: 
+            labelSelector: 
+              matchExpressions: 
+                - key: app 
+                  operator: In 
+                  values: 
+                    - MyApp 
+            topologyKey: kubernetes.io/hostname 
+
+#D=> Analysis Templates(Prometheus, Datadog, New Relic, CloudWatch, InfluxDB, Graphite,Kubernetes Jobs, Webhook, Custom metric plugin 
+#We can use this template to run automatic testing 
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate 
+metadata: 
+  name: success-rate 
+spec: 
+  args: 
+    - name: service-name 
+  metrics:
+    - name: success-rate 
+      interval: 5m 
+      successCondition: result[0] >= 0.95 
+      failureLimit: 3 
+      provider: 
+        prometheus:
+          address: http://prometheus.example.com:9090 
+          query: 1 
+            sum(iratel( 
+              requests_total{reporter="source",destination_service= 
+            )) /
+            sum(irate( 
+              requests_ total{reporter="source",destination_service= 
+            ))
+
+#E=>Supported DevOps Applications 
+1)Kustomize = this is a templating app that is use to deploy apps to diff env
+2)Helm = package manager for k8s 
+3)Prometheus =APM 
+
+#MIGRATING EXISTING DEPLOYMENTS TO Argo Rollouts 
+•Convert Deployment to Rollout 
+• apiversion 
+• kind strategy 
+• Reference Deployment from Rollout 
+• Running both Rollout and Deployment 
+• Required for Production 
+
+#Method-1 Do not touch existing deployment object,create a separate rollout object and reference the exiting deployment 
+apiVersion: argoproj-io/v1alpha1 
+kind: Rollout 
+metadata: 
+  name: rollout-ref-deployment 
+spec:
+  replicas: 4 
+  selector:  
+    matchLabels: 
+      app: rollout-ref-deployment 
+  workloadRef:    #reference existing deployment 
+    apiVersion: apps/v1 
+    kind: Deployment  
+    name: rollout-ref-deployment # end of reference 
+  strategy: 
+    canary: 
+      steps: 
+        - setWeight: 25 
+        - pause: {durations 1m}
+
+#Method-2 convert existing deployment to rollout object by changing apiversion,kind and stategy. Meaning u add ur setWeight and other steps into the deployment object 
+
+#DEMO 
+#commands 
+-kubectl argo rollouts get rollout sm-facade -w #describes the rollout object 
+-kubectl get analysisrun (list analaysis) 
+-kubectl describe analysisrun <analysisrun_Name> 
+
+create manifest files(analysis-template-job.yaml,analysis-template-prom.yaml, configmap.yml, canary-deployment.yml, stable-deployment.yml, ingress.yml, service.yml, rollouts.yml 
+#A=>stable-deployment.yaml running with image version say 1.0.0-release-57 
+apiversion: apps/v1 
+kind: Deployment 
+metadata: 
+  name: sm-facade 
+  namespace: rollout-test 
+spec: 
+  replicas: 0
+  selector: 
+    matchLabels: 
+      app: sm-facade 
+  template: 
+    metadata: 
+      annotations: 
+        prometheus.io/path: /actuator/prometheus 
+        prometheus.io/port: "9890" 
+        prometheus.io/scrape: "true" 
+      labels: 
+        app: sm-facade 
+    spec:
+      contalners: 
+        - env: 
+            - name: SPLUNK_CLUSTER 
+              value: ist_test . 
+            - name: SPLUNK_LOG_MONITOR 
+              value: /Log/app/schedule-manager-facade. log/wfmmnt_core|sm-facade-mnt-usw2 - 
+            - name: SPLUNK_LOG_MONITOR2 
+              value: /10g/app/schedule-manager-facade-metrics. log|wfmmnt_core| sm-facade-mnt-usw2 
+          image: cocker.avole.com/solunk-1st solunk-universaltorwarder:latest 
+          imagePullPolicy: Always 
+          name: splunkforwarder 
+          resources: 
+            Limits: 
+              cpu: 200m 
+              memory: 512Mi 
+            requests: 
+              cpu: 50m 
+              memory: 256M1 
+          volumeMounts: 
+#etc add manifest parameters
+
+#B=>Canary-deployment.yaml running with image version say 1.0.0-release-66 
+#C->rollout.yaml(here we have the rollout object where we define the canary metadata lables, the steps) 
+apiVersion: argoproj.io/v1alpha1 
+Kind: Rollout 
+metadata: 
+  name: sm-facade 
+  namespace: rollout-test 
+spec: 
+  replicas: 4 
+  revisionHistoryLimit: 3 
+  rollbackwindow: 
+    revisions: 3 
+  workloadRef: 
+    apiVersion: apps/v1 
+    Kind: Deployment 
+    name: sm-facade 
+  strategy: 
+  canary: 
+    stableMetadata: 
+      labels: 
+        role: stable 
+    canaryMetadata: 
+      labels: 
+        role: canary 
+    dynamicStableScale: true 
+    canaryservice: sm-racade-canary 
+    stableService: sm-facade-stable 
+    trafficRouting: 
+      nginx: 
+        stableingress: facade-stable 
+    Steps: 
+      - setWeight: 25 
+      - pause: { duration: 1m }
+      - analysis: 
+          templates: 
+            - templateName: memory-check #create prometheus anyalysis template for memory check testing/analysis 
+      - setweiht: 50 
+      - pause: { duration: 1m }
+      - analysis: 
+          templates: 
+            - templateName: status-code-check 
+      - setWeight: 100 
+
+#E->analysis-template.yml(create prometheus analysis template) 
+apiVersion: argoproj.io/v1alpha1 
+kind: AnalysisTemplate 
+metadata: 
+   name: memory-check 
+spec: 
+  metrics: 
+    - name: memory-check
+      interval: 1m 
+      count: 2 #number of checks required 
+      successCondition: result[0] < 40 #if memory usage of the canary pods is equal to or less than 40%, test is success 
+      provider: 
+        prometheus: 
+          address: http:/monztorino-orometheus.orometheus-oneratorsvc.cluster.Local. 9090 
+          query: round (max by (pod) (max_ofer time(container. memory_ usage bytes (namespace=" rollou-test" con (pod) (max by (pod) (kube pod container resource limits)) * 100.0.01) pod=x" S image=x", +66)[5m]))/,
+
+#create analysis to run a k8s job and manually curling endpoints for healthcheck 
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate 
+metadata: 
+  name: status-code-check 
+spec: 
+  metrics: 
+    - name: status-code-check
+        provider: 
+          job:
+            spec: 
+              backoffLimit: 1 
+              template: 
+                spec: 
+                  containers: 
+                    - name: status 
+                      image: docker.apple.com/base-images/ubi9-minimal/ubi-debug-runtime:latest 
+                      args: 
+                        - /bin/sh 
+	                      - -ec
+	                      - >-
+	                        curl -s -o /dev/null -w \"\%{http_code}\" http://sm-facade-canary.rollout-test.svc.cluster, local:9090/health/check 
+	                 restartPolicy: Never
+	
+	Ones Analysis test is passed, rollout will send 50% of the traffic(setweight) to the canary pods. Then wait for set duration e.g 1m then another Analysis pods healthcheck(status-code-check) and if the health check analysis is a sucess, rollout will shift 100% of the traffic to canary
+ -create canary deployment and apply it(kubectl apply -f canary-deployment. yaml) 
+	
+	#This canary deployment will create a new canary pod depending on our definition.since our definition is 25% 0f 4 stable pods,it will create 1 new canary pod and 
+	#Ones the new pod is up,25% of the traffic will be shifted to the new plod and rollout will automatically run the analysis test in our definition(memory-check) and if passed, 
+	#it Will the shift 50% traffic to the pod and spin another pod to support the traffic.The number of stable pods will decrease accordingly. 
+	#it will wait another 1m and automatically start the next analysis check(status-code-check) in our definition and if passed, shift 100% traffic to the canary pod
